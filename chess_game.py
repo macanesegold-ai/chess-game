@@ -148,7 +148,7 @@ PROMOTION_TYPES = ['queen', 'rook', 'bishop', 'knight']
 # ---------------------------------------------------------------------------
 GAMES = {
     'game1': {
-        'label':       'Game 1',
+        'label':       'Fork',
         'fen':         '2b2k2/1p2q1p1/p4p1p/3pN3/3P4/7P/PP1Q1PP1/6K1 w - - 0 1',
         'solution':    [('e5', 'g6')],
         'hint_sq':     'e5',
@@ -157,7 +157,7 @@ GAMES = {
         'free_play':   False,
     },
     'game2': {
-        'label':       'Game 2',
+        'label':       'Rook',
         'fen':         '4r3/1p6/2p2p2/b3k1p1/3p4/1P2p1RP/1BP1P2P/3K4 w - - 0 1',
         'solution':    [('g3', 'e3'), ('e5', 'f5'), ('e3', 'e8')],
         'hint_sq':     'g3',
@@ -278,6 +278,9 @@ class PuzzleState:
         self.hint_timer        = 0
         self.flash_timer       = 0
         self.correct_timer     = 0
+        self.show_nav_popup    = False
+        self.nav_pending_key   = None
+        self.nav_popup_timer   = 0
 
     def reset(self):
         self._load()
@@ -768,24 +771,26 @@ def handle_play_click(gs, px, py):
 # Puzzle selector screen
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Puzzle mode -- Game 1 / Game 2 button rects (drawn inside status bar)
+# Puzzle mode -- arrow button geometry
 # ---------------------------------------------------------------------------
-GAME_BTN_W  = 100
-GAME_BTN_H  = 28
-GAME_BTN_GAP = 12
+ARROW_W = 44
+ARROW_H = 28
+GAME_KEYS = list(GAMES.keys())   # ['game1', 'game2']
 
-def get_game_btn_rects():
-    """Return [(rect, game_key), ...] for the two game buttons in the status bar."""
-    bar_y    = BOARD_Y + BOARD_PX
-    btn_y    = bar_y + STATUS_H - GAME_BTN_H - 8
-    total_w  = 2 * GAME_BTN_W + GAME_BTN_GAP
-    start_x  = (WINDOW_W - total_w) // 2
-    keys     = list(GAMES.keys())
-    return [
-        (pygame.Rect(start_x + i * (GAME_BTN_W + GAME_BTN_GAP), btn_y, GAME_BTN_W, GAME_BTN_H),
-         keys[i])
-        for i in range(len(keys))
-    ]
+
+def get_arrow_rects(ps):
+    """Return list of (rect, target_game_key, direction) for visible arrows."""
+    bar_y   = BOARD_Y + BOARD_PX
+    btn_y   = bar_y + STATUS_H - ARROW_H - 8
+    idx     = GAME_KEYS.index(ps.game_key)
+    arrows  = []
+    if idx > 0:                          # not the first game → show left arrow
+        arrows.append((pygame.Rect(10, btn_y, ARROW_W, ARROW_H),
+                       GAME_KEYS[idx - 1], 'left'))
+    if idx < len(GAME_KEYS) - 1:        # not the last game → show right arrow
+        arrows.append((pygame.Rect(WINDOW_W - ARROW_W - 10, btn_y, ARROW_W, ARROW_H),
+                       GAME_KEYS[idx + 1], 'right'))
+    return arrows
 
 
 # ---------------------------------------------------------------------------
@@ -797,51 +802,126 @@ def draw_puzzle_status(surface, ps, ui_font, small_font):
 
     pz = ps.puzzle
 
+    # --- Status message (top of bar) ---
     if ps.status == 'solved':
         msg = pz['success_msg']
-        col = ( 80, 220,  80)
+        col = (80, 220, 80)
     elif ps.status == 'wrong':
-        msg = "Wrong move! Resetting..."
-        col = (255,  70,  70)
+        msg = "Wrong move!  Resetting..."
+        col = (255, 70, 70)
     elif ps.status == 'check':
-        msg = pz['label'] + "  --  CHECK! Keep going."
-        col = (255, 160,  50)
+        msg = pz['label'] + "  --  CHECK!  Keep going."
+        col = (255, 160, 50)
     elif ps.status == 'stalemate':
-        msg = pz['label'] + "  --  Stalemate. Press R to retry."
-        col = (255, 200,  80)
+        msg = pz['label'] + "  --  Stalemate."
+        col = (255, 200, 80)
     else:
-        msg = pz['label'] + "  --  " + pz['description']
+        turn_str = ps.turn.capitalize()
+        msg = pz['label'] + "  --  " + turn_str + " to move"
         col = (200, 230, 200) if ps.turn == 'white' else (160, 180, 220)
 
     s = ui_font.render(msg, True, col)
-    surface.blit(s, s.get_rect(centerx=WINDOW_W//2, centery=bar_y + 18))
+    surface.blit(s, s.get_rect(centerx=WINDOW_W // 2, centery=bar_y + 30))
 
-    # Hint / reset line
-    hint_line = "H = Hint   |   R = Reset"
-    s2 = small_font.render(hint_line, True, (110, 110, 110))
-    surface.blit(s2, s2.get_rect(centerx=WINDOW_W//2, centery=bar_y + 40))
-
-    # Game 1 / Game 2 buttons
+    # --- Arrow buttons (bottom corners) ---
     mx, my = pygame.mouse.get_pos()
-    for rect, key in get_game_btn_rects():
-        active  = (ps.game_key == key)
-        hovered = rect.collidepoint(mx, my)
-        if active:
-            bg_col     = (80, 120, 200)
-            border_col = (120, 160, 255)
-            txt_col    = (255, 255, 255)
-        elif hovered:
-            bg_col     = (55, 58, 75)
-            border_col = (100, 100, 130)
-            txt_col    = (220, 220, 220)
-        else:
-            bg_col     = (35, 37, 48)
-            border_col = (70, 70, 90)
-            txt_col    = (150, 150, 170)
+    for rect, _key, direction in get_arrow_rects(ps):
+        hovered  = rect.collidepoint(mx, my)
+        bg_col   = (70, 90, 140) if hovered else (40, 42, 54)
+        bdr_col  = (120, 150, 220) if hovered else (70, 72, 90)
         pygame.draw.rect(surface, bg_col, rect, border_radius=6)
-        pygame.draw.rect(surface, border_col, rect, 1, border_radius=6)
-        lbl = small_font.render(GAMES[key]['label'], True, txt_col)
+        pygame.draw.rect(surface, bdr_col, rect, 1, border_radius=6)
+        symbol = '\u25c4' if direction == 'left' else '\u25ba'   # ◄ ►
+        lbl = ui_font.render(symbol, True, (220, 220, 220))
         surface.blit(lbl, lbl.get_rect(center=rect.center))
+
+
+# ---------------------------------------------------------------------------
+# Puzzle mode -- navigation popup (drawn over board)
+# ---------------------------------------------------------------------------
+def draw_nav_popup(surface, ps, ui_font, small_font):
+    if not ps.show_nav_popup:
+        return
+
+    pz       = ps.puzzle
+    solved   = (ps.status == 'solved')
+    dest_key = ps.nav_pending_key
+    dest_lbl = GAMES[dest_key]['label'] if dest_key else ''
+
+    # Panel dimensions
+    pw, ph = 420, 160
+    px_    = (WINDOW_W - pw) // 2
+    py_    = BOARD_Y + (BOARD_PX - ph) // 2
+
+    # Background panel
+    panel = pygame.Surface((pw, ph), pygame.SRCALPHA)
+    panel.fill((30, 32, 44, 240))
+    surface.blit(panel, (px_, py_))
+    pygame.draw.rect(surface, (100, 120, 200), (px_, py_, pw, ph), 2, border_radius=12)
+
+    if solved:
+        # --- Completed popup (auto-dismiss) ---
+        line1 = pz['label'] + " completed!"
+        line2 = "Moving to " + dest_lbl + "..."
+        col1  = (80, 220, 80)
+        col2  = (180, 200, 180)
+        s1 = ui_font.render(line1, True, col1)
+        s2 = small_font.render(line2, True, col2)
+        surface.blit(s1, s1.get_rect(centerx=px_ + pw // 2, centery=py_ + 55))
+        surface.blit(s2, s2.get_rect(centerx=px_ + pw // 2, centery=py_ + 95))
+    else:
+        # --- Unfinished popup (with Stay / Yes buttons) ---
+        line1 = "You haven't finished " + pz['label'] + " yet."
+        line2 = "Move to " + dest_lbl + " anyway?"
+        col1  = (255, 200, 80)
+        col2  = (200, 200, 200)
+        s1 = ui_font.render(line1, True, col1)
+        s2 = small_font.render(line2, True, col2)
+        surface.blit(s1, s1.get_rect(centerx=px_ + pw // 2, centery=py_ + 38))
+        surface.blit(s2, s2.get_rect(centerx=px_ + pw // 2, centery=py_ + 68))
+
+        # Buttons
+        stay_r, confirm_r = _nav_popup_btn_rects(px_, py_, pw, ph)
+        for rect, label, base_col in [
+            (stay_r,    "Stay",         (70, 70, 90)),
+            (confirm_r, "Yes, continue",(60, 110, 60)),
+        ]:
+            mx, my = pygame.mouse.get_pos()
+            hov = rect.collidepoint(mx, my)
+            bg  = tuple(min(255, c + 20) for c in base_col) if hov else base_col
+            pygame.draw.rect(surface, bg, rect, border_radius=7)
+            pygame.draw.rect(surface, (130, 130, 160), rect, 1, border_radius=7)
+            lbl = small_font.render(label, True, (230, 230, 230))
+            surface.blit(lbl, lbl.get_rect(center=rect.center))
+
+
+def _nav_popup_btn_rects(px_, py_, pw, ph):
+    bw, bh = 130, 32
+    gap    = 20
+    total  = 2 * bw + gap
+    sx     = px_ + (pw - total) // 2
+    by_    = py_ + ph - bh - 18
+    stay_r    = pygame.Rect(sx,          by_, bw, bh)
+    confirm_r = pygame.Rect(sx + bw + gap, by_, bw, bh)
+    return stay_r, confirm_r
+
+
+def get_nav_popup_click(ps, px, py):
+    """
+    Returns 'stay', 'confirm', or None depending on what was clicked in the popup.
+    Only meaningful when ps.show_nav_popup is True and puzzle is NOT solved.
+    """
+    if not ps.show_nav_popup or ps.status == 'solved':
+        return None
+    pw, ph = 420, 160
+    px_    = (WINDOW_W - pw) // 2
+    py_    = BOARD_Y + (BOARD_PX - ph) // 2
+    stay_r, confirm_r = _nav_popup_btn_rects(px_, py_, pw, ph)
+    if stay_r.collidepoint(px, py):
+        return 'stay'
+    if confirm_r.collidepoint(px, py):
+        return 'confirm'
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -978,12 +1058,12 @@ def main():
                 if app_mode == 'play':
                     if event.key == pygame.K_r:
                         gs = GameState()
-
                 elif app_mode == 'puzzle':
-                    if event.key == pygame.K_r:
-                        ps.reset()
-                    elif event.key == pygame.K_h and ps.status not in ('solved',):
-                        ps.hint_timer = FPS * 3
+                    if not ps.show_nav_popup:
+                        if event.key == pygame.K_r:
+                            ps.reset()
+                        elif event.key == pygame.K_h and ps.status not in ('solved',):
+                            ps.hint_timer = FPS * 3
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 px, py = event.pos
@@ -992,19 +1072,36 @@ def main():
                 mode = tab_click(px, py)
                 if mode:
                     app_mode = mode
+
                 elif app_mode == 'play':
                     if gs.status in ('playing', 'check') or gs.promotion_pending:
                         handle_play_click(gs, px, py)
+
                 elif app_mode == 'puzzle':
-                    # Game 1 / Game 2 button clicks (in status bar)
-                    switched = False
-                    for btn_rect, key in get_game_btn_rects():
-                        if btn_rect.collidepoint(px, py):
-                            ps.switch_game(key)
-                            switched = True
-                            break
-                    if not switched:
-                        handle_puzzle_click(ps, px, py)
+                    if ps.show_nav_popup:
+                        # --- Popup button handling ---
+                        action = get_nav_popup_click(ps, px, py)
+                        if action == 'stay':
+                            ps.show_nav_popup  = False
+                            ps.nav_pending_key = None
+                        elif action == 'confirm':
+                            dest = ps.nav_pending_key
+                            ps.reset()                  # reset current game
+                            ps.switch_game(dest)        # switch + reset dest
+                    else:
+                        # --- Arrow button clicks ---
+                        arrow_clicked = False
+                        for rect, dest_key, _dir in get_arrow_rects(ps):
+                            if rect.collidepoint(px, py):
+                                ps.nav_pending_key = dest_key
+                                ps.show_nav_popup  = True
+                                if ps.status == 'solved':
+                                    # Auto-dismiss after 1.5s
+                                    ps.nav_popup_timer = int(FPS * 1.5)
+                                arrow_clicked = True
+                                break
+                        if not arrow_clicked:
+                            handle_puzzle_click(ps, px, py)
 
         # ---- Puzzle timers ------------------------------------------------
         if app_mode == 'puzzle':
@@ -1018,6 +1115,14 @@ def main():
                 ps.flash_timer = max(0, ps.flash_timer - 1)
                 if ps.flash_timer == 0:
                     ps.reset()
+
+            # Auto-dismiss nav popup after solved
+            if ps.show_nav_popup and ps.status == 'solved' and ps.nav_popup_timer > 0:
+                ps.nav_popup_timer = max(0, ps.nav_popup_timer - 1)
+                if ps.nav_popup_timer == 0:
+                    dest = ps.nav_pending_key
+                    ps.reset()
+                    ps.switch_game(dest)
 
         # ---- Draw ---------------------------------------------------------
         screen.fill(C_BG)
@@ -1051,6 +1156,8 @@ def main():
                 wrong_flash_alpha=wrong_alpha,
                 correct_sq=correct_rc)
             draw_puzzle_status(screen, ps, ui_font, small_font)
+            if ps.show_nav_popup:
+                draw_nav_popup(screen, ps, ui_font, small_font)
 
         draw_tabs(screen, app_mode, tab_font, title_font)
         pygame.display.flip()
