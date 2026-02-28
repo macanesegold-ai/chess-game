@@ -149,6 +149,7 @@ PROMOTION_TYPES = ['queen', 'rook', 'bishop', 'knight']
 GAMES = {
     'game1': {
         'label':       'Fork',
+        'mode':        'puzzle',
         'fen':         '2b2k2/1p2q1p1/p4p1p/3pN3/3P4/7P/PP1Q1PP1/6K1 w - - 0 1',
         'solution':    [('e5', 'g6')],
         'hint_sq':     'e5',
@@ -158,12 +159,58 @@ GAMES = {
     },
     'game2': {
         'label':       'Rook',
+        'mode':        'puzzle',
         'fen':         '4r3/1p6/2p2p2/b3k1p1/3p4/1P2p1RP/1BP1P2P/3K4 w - - 0 1',
         'solution':    [('g3', 'e3'), ('e5', 'f5'), ('e3', 'e8')],
         'hint_sq':     'g3',
         'description': 'White to move. Find the 3-move winning combination!',
         'success_msg': 'Rxe3+ Kf5 Rxe8! Rook wins the rook -- excellent combination!',
         'free_play':   False,
+    },
+    'game3': {
+        'label':       "Alekhine's Defense",
+        'mode':        'replay',
+        'subtitle':    'Four Pawns Attack',
+        'moves': [
+            ('e2','e4'), ('g8','f6'),
+            ('e4','e5'), ('f6','d5'),
+            ('d2','d4'), ('d7','d6'),
+            ('c2','c4'), ('d5','b6'),
+            ('f2','f4'), ('d6','e5'),
+            ('f4','e5'), ('b8','c6'),
+            ('c1','e3'), ('c8','f5'),
+            ('b1','c3'), ('e7','e6'),
+            ('g1','f3'), ('f8','e7'),
+            ('f1','e2'), ('e8','g8'),
+            ('e1','g1'), ('f7','f6'),
+            ('e5','f6'), ('e7','f6'),
+        ],
+        'explanations': [
+            "1. e4 — White controls the centre with a pawn",
+            "1... Nf6 — Black attacks e4 immediately, inviting White to chase the knight",
+            "2. e5 — White advances aggressively, gaining space",
+            "2... Nd5 — Knight retreats to the ideal d5 square",
+            "3. d4 — White builds a massive pawn centre",
+            "3... d6 — Black challenges White's centre immediately",
+            "4. c4 — White expands further, pushing the knight away",
+            "4... Nb6 — Knight retreats again; hard to dislodge from b6",
+            "5. f4 — Four Pawns Attack! White builds a massive pawn wall",
+            "5... dxe5 — Black demolishes the centre before it becomes too strong",
+            "6. fxe5 — White recaptures, keeping a strong pawn on e5",
+            "6... Nc6 — Attacking d4 and pressuring White's centre from the side",
+            "7. Be3 — White develops and defends d4",
+            "7... Bf5 — Black develops the bishop actively before ...e6 closes it in",
+            "8. Nc3 — White develops the knight, adding pressure to d5",
+            "8... e6 — Solid defence; Black prepares to castle kingside",
+            "9. Nf3 — White completes kingside development",
+            "9... Be7 — Black prepares to castle; bishop supports kingside",
+            "10. Be2 — White prepares to castle; solid bishop placement",
+            "10... O-O — Black castles to safety",
+            "11. O-O — White castles; both kings are now safe",
+            "11... f6! — Black strikes the pawn centre at its base",
+            "12. exf6 — White captures en passant, opening the f-file",
+            "12... Bxf6 — Black recaptures with excellent piece activity and open diagonals",
+        ],
     },
 }
 
@@ -292,6 +339,99 @@ class PuzzleState:
     @property
     def puzzle(self):
         return GAMES[self.game_key]
+
+
+# ---------------------------------------------------------------------------
+# ReplayState  (Alekhine's Defense / replay mode)
+# ---------------------------------------------------------------------------
+def _build_replay_boards(game_key):
+    """Pre-compute list of boards for every step (0=start, 1=after move1, ...)."""
+    gm     = GAMES[game_key]
+    board  = make_board()
+    turn   = 'white'
+    ep     = None
+    boards = [copy_board(board)]
+    last_moves = [None]   # last_move before each step
+
+    for fr, to in gm['moves']:
+        r,  c  = alg_to_rc(fr)
+        mr, mc = alg_to_rc(to)
+        piece  = board[r][c]
+        new_ep = None
+
+        # En passant capture
+        if piece.type == 'pawn' and ep and (mr, mc) == ep:
+            board[r][mc] = None
+
+        # Castling rook move
+        if piece.type == 'king' and abs(mc - c) == 2:
+            back = r
+            if mc == 6:
+                board[back][5] = board[back][7]; board[back][7] = None
+                if board[back][5]: board[back][5].has_moved = True
+            elif mc == 2:
+                board[back][3] = board[back][0]; board[back][0] = None
+                if board[back][3]: board[back][3].has_moved = True
+
+        # Pawn double push en passant target
+        if piece.type == 'pawn' and abs(mr - r) == 2:
+            new_ep = ((r + mr) // 2, c)
+
+        board[mr][mc]   = piece
+        board[r][c]     = None
+        piece.has_moved = True
+        ep   = new_ep
+        turn = 'black' if turn == 'white' else 'white'
+
+        boards.append(copy_board(board))
+        last_moves.append(((r, c), (mr, mc)))
+
+    return boards, last_moves
+
+
+class ReplayState:
+    def __init__(self, game_key='game3'):
+        self.game_key        = game_key
+        self.step            = 0        # 0 = starting position
+        self.boards, self.last_moves = _build_replay_boards(game_key)
+        self.total_steps     = len(self.boards) - 1   # 24
+        self.show_nav_popup  = False
+        self.nav_pending_key = None
+        self.nav_popup_timer = 0
+
+    def reset(self):
+        self.step            = 0
+        self.show_nav_popup  = False
+        self.nav_pending_key = None
+        self.nav_popup_timer = 0
+
+    def switch_game(self, game_key):
+        self.game_key        = game_key
+        self.step            = 0
+        self.show_nav_popup  = False
+        self.nav_pending_key = None
+        self.nav_popup_timer = 0
+        if GAMES[game_key]['mode'] == 'replay':
+            self.boards, self.last_moves = _build_replay_boards(game_key)
+            self.total_steps = len(self.boards) - 1
+
+    @property
+    def board(self):
+        return self.boards[self.step]
+
+    @property
+    def last_move(self):
+        return self.last_moves[self.step]
+
+    @property
+    def explanation(self):
+        if self.step == 0:
+            return GAMES[self.game_key].get('subtitle', '')
+        return GAMES[self.game_key]['explanations'][self.step - 1]
+
+    @property
+    def is_finished(self):
+        return self.step >= self.total_steps
 
 
 # ---------------------------------------------------------------------------
@@ -574,13 +714,21 @@ def tab_click(px, py):
 # ---------------------------------------------------------------------------
 def draw_board_and_pieces(surface, board, selected, valid_moves, piece_font,
                           check_king_pos=None, hint_sq=None,
-                          wrong_flash_alpha=0, correct_sq=None):
+                          wrong_flash_alpha=0, correct_sq=None, last_move=None):
+    C_LAST_MOVE = (205, 185, 80, 160)   # golden yellow for replay last-move highlight
+
     # 1. Squares
     for r in range(8):
         for c in range(8):
             rect  = sq_rect(r, c)
             color = C_LIGHT if (r + c) % 2 == 0 else C_DARK
             pygame.draw.rect(surface, color, rect)
+
+            # Last-move highlight (golden yellow) for replay mode
+            if last_move and ((r, c) == last_move[0] or (r, c) == last_move[1]):
+                ov = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
+                ov.fill(C_LAST_MOVE)
+                surface.blit(ov, rect.topleft)
 
             # King-in-check red tint
             if check_king_pos and (r, c) == check_king_pos:
@@ -778,19 +926,32 @@ ARROW_H = 28
 GAME_KEYS = list(GAMES.keys())   # ['game1', 'game2']
 
 
-def get_arrow_rects(ps):
-    """Return list of (rect, target_game_key, direction) for visible arrows."""
+def get_arrow_rects(state):
+    """Return list of (rect, target_game_key, direction) for visible arrows.
+    Works for both PuzzleState and ReplayState."""
     bar_y   = BOARD_Y + BOARD_PX
     btn_y   = bar_y + STATUS_H - ARROW_H - 8
-    idx     = GAME_KEYS.index(ps.game_key)
+    idx     = GAME_KEYS.index(state.game_key)
     arrows  = []
-    if idx > 0:                          # not the first game → show left arrow
+    if idx > 0:
         arrows.append((pygame.Rect(10, btn_y, ARROW_W, ARROW_H),
                        GAME_KEYS[idx - 1], 'left'))
-    if idx < len(GAME_KEYS) - 1:        # not the last game → show right arrow
+    if idx < len(GAME_KEYS) - 1:
         arrows.append((pygame.Rect(WINDOW_W - ARROW_W - 10, btn_y, ARROW_W, ARROW_H),
                        GAME_KEYS[idx + 1], 'right'))
     return arrows
+
+
+def get_replay_step_arrow_rects(rs):
+    """Return (prev_rect, next_rect) for stepping through replay moves.
+    These are INNER arrows inside the status bar, distinct from game-navigation arrows."""
+    bar_y  = BOARD_Y + BOARD_PX
+    btn_y  = bar_y + STATUS_H - ARROW_H - 8
+    centre = WINDOW_W // 2
+    gap    = 60
+    prev_r = pygame.Rect(centre - gap - ARROW_W, btn_y, ARROW_W, ARROW_H)
+    next_r = pygame.Rect(centre + gap,            btn_y, ARROW_W, ARROW_H)
+    return prev_r, next_r
 
 
 # ---------------------------------------------------------------------------
@@ -837,15 +998,84 @@ def draw_puzzle_status(surface, ps, ui_font, small_font):
 
 
 # ---------------------------------------------------------------------------
+# Replay mode -- status bar
+# ---------------------------------------------------------------------------
+def draw_replay_status(surface, rs, ui_font, small_font):
+    bar_y = BOARD_Y + BOARD_PX
+    pygame.draw.rect(surface, C_STATUS_BG, (0, bar_y, WINDOW_W, STATUS_H))
+
+    gm = GAMES[rs.game_key]
+
+    # --- Title line ---
+    if rs.step == 0:
+        title_msg = gm['label'] + "  --  " + gm.get('subtitle', '')
+        title_col = (220, 175, 60)
+    else:
+        # Which move number and whose turn label
+        move_num  = (rs.step + 1) // 2
+        side      = "White" if rs.step % 2 == 1 else "Black"
+        title_msg = gm['label'] + "  --  Move " + str(move_num) + " (" + side + ")"
+        title_col = (200, 230, 200) if rs.step % 2 == 1 else (160, 180, 220)
+
+    s = ui_font.render(title_msg, True, title_col)
+    surface.blit(s, s.get_rect(centerx=WINDOW_W // 2, centery=bar_y + 16))
+
+    # --- Explanation line ---
+    expl = rs.explanation
+    s2 = small_font.render(expl, True, (180, 180, 190))
+    surface.blit(s2, s2.get_rect(centerx=WINDOW_W // 2, centery=bar_y + 38))
+
+    # --- Step counter ---
+    counter = str(rs.step) + " / " + str(rs.total_steps)
+    s3 = small_font.render(counter, True, (100, 100, 120))
+    surface.blit(s3, s3.get_rect(centerx=WINDOW_W // 2, centery=bar_y + 60))
+
+    # --- Inner step arrows (◄ prev move / ► next move) ---
+    mx, my = pygame.mouse.get_pos()
+    prev_r, next_r = get_replay_step_arrow_rects(rs)
+
+    for rect, active, symbol in [
+        (prev_r, rs.step > 0,              '\u25c4'),
+        (next_r, rs.step < rs.total_steps, '\u25ba'),
+    ]:
+        if not active:
+            # Greyed out
+            pygame.draw.rect(surface, (30, 32, 40), rect, border_radius=6)
+            pygame.draw.rect(surface, (50, 52, 60), rect, 1, border_radius=6)
+            lbl = small_font.render(symbol, True, (60, 62, 70))
+        else:
+            hovered = rect.collidepoint(mx, my)
+            bg_col  = (70, 90, 140) if hovered else (40, 42, 54)
+            bdr_col = (120, 150, 220) if hovered else (70, 72, 90)
+            pygame.draw.rect(surface, bg_col, rect, border_radius=6)
+            pygame.draw.rect(surface, bdr_col, rect, 1, border_radius=6)
+            lbl = ui_font.render(symbol, True, (220, 220, 220))
+        surface.blit(lbl, lbl.get_rect(center=rect.center))
+
+    # --- Outer game-navigation arrows (far left / far right) ---
+    for rect, _key, direction in get_arrow_rects(rs):
+        hovered  = rect.collidepoint(mx, my)
+        bg_col   = (70, 90, 140) if hovered else (40, 42, 54)
+        bdr_col  = (120, 150, 220) if hovered else (70, 72, 90)
+        pygame.draw.rect(surface, bg_col, rect, border_radius=6)
+        pygame.draw.rect(surface, bdr_col, rect, 1, border_radius=6)
+        sym = '\u25c4' if direction == 'left' else '\u25ba'
+        lbl = ui_font.render(sym, True, (220, 220, 220))
+        surface.blit(lbl, lbl.get_rect(center=rect.center))
+
+
+# ---------------------------------------------------------------------------
 # Puzzle mode -- navigation popup (drawn over board)
 # ---------------------------------------------------------------------------
-def draw_nav_popup(surface, ps, ui_font, small_font):
-    if not ps.show_nav_popup:
+def draw_nav_popup(surface, state, ui_font, small_font):
+    if not state.show_nav_popup:
         return
 
-    pz       = ps.puzzle
-    solved   = (ps.status == 'solved')
-    dest_key = ps.nav_pending_key
+    # Works for PuzzleState (has .status) and ReplayState (check is_finished)
+    is_ps    = isinstance(state, PuzzleState)
+    solved   = (state.status == 'solved') if is_ps else state.is_finished
+    cur_lbl  = GAMES[state.game_key]['label']
+    dest_key = state.nav_pending_key
     dest_lbl = GAMES[dest_key]['label'] if dest_key else ''
 
     # Panel dimensions
@@ -861,7 +1091,7 @@ def draw_nav_popup(surface, ps, ui_font, small_font):
 
     if solved:
         # --- Completed popup (auto-dismiss) ---
-        line1 = pz['label'] + " completed!"
+        line1 = cur_lbl + " completed!"
         line2 = "Moving to " + dest_lbl + "..."
         col1  = (80, 220, 80)
         col2  = (180, 200, 180)
@@ -871,7 +1101,7 @@ def draw_nav_popup(surface, ps, ui_font, small_font):
         surface.blit(s2, s2.get_rect(centerx=px_ + pw // 2, centery=py_ + 95))
     else:
         # --- Unfinished popup (with Stay / Yes buttons) ---
-        line1 = "You haven't finished " + pz['label'] + " yet."
+        line1 = "You haven't finished " + cur_lbl + " yet."
         line2 = "Move to " + dest_lbl + " anyway?"
         col1  = (255, 200, 80)
         col2  = (200, 200, 200)
@@ -1031,6 +1261,59 @@ def handle_puzzle_click(ps, px, py):
 
 
 # ---------------------------------------------------------------------------
+# Helpers: create the right state object for a game key
+# ---------------------------------------------------------------------------
+def _make_puzzle_state(game_key):
+    return PuzzleState(game_key)
+
+def _make_replay_state(game_key):
+    return ReplayState(game_key)
+
+def _make_state(game_key):
+    if GAMES[game_key]['mode'] == 'replay':
+        return _make_replay_state(game_key)
+    return _make_puzzle_state(game_key)
+
+
+# ---------------------------------------------------------------------------
+# Shared nav-popup handler (works for both state types)
+# ---------------------------------------------------------------------------
+def _handle_nav_arrow_click(state, dest_key):
+    """Called when user clicks an outer game-navigation arrow."""
+    is_ps   = isinstance(state, PuzzleState)
+    finished = (state.status == 'solved') if is_ps else state.is_finished
+    state.nav_pending_key = dest_key
+    state.show_nav_popup  = True
+    if finished:
+        state.nav_popup_timer = int(FPS * 1.5)
+
+def _handle_nav_popup_action(state, action):
+    """Returns new state object or same state depending on action."""
+    if action == 'stay':
+        state.show_nav_popup  = False
+        state.nav_pending_key = None
+        return state
+    elif action == 'confirm':
+        dest = state.nav_pending_key
+        state.reset()
+        new_state = _make_state(dest)
+        return new_state
+    return state
+
+def _tick_nav_popup(state):
+    """Auto-dismiss popup for finished games. Returns (possibly new) state."""
+    is_ps    = isinstance(state, PuzzleState)
+    finished = (state.status == 'solved') if is_ps else state.is_finished
+    if state.show_nav_popup and finished and state.nav_popup_timer > 0:
+        state.nav_popup_timer = max(0, state.nav_popup_timer - 1)
+        if state.nav_popup_timer == 0:
+            dest = state.nav_pending_key
+            state.reset()
+            return _make_state(dest)
+    return state
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 def main():
@@ -1042,8 +1325,9 @@ def main():
     piece_font, ui_font, small_font, tab_font, title_font = load_fonts()
 
     app_mode = 'play'
-    gs = GameState()
-    ps = PuzzleState('game1')
+    gs       = GameState()
+    # Active puzzle/replay state — can be PuzzleState or ReplayState
+    cur_state = _make_state('game1')
 
     running = True
     while running:
@@ -1059,11 +1343,17 @@ def main():
                     if event.key == pygame.K_r:
                         gs = GameState()
                 elif app_mode == 'puzzle':
-                    if not ps.show_nav_popup:
-                        if event.key == pygame.K_r:
-                            ps.reset()
-                        elif event.key == pygame.K_h and ps.status not in ('solved',):
-                            ps.hint_timer = FPS * 3
+                    if not cur_state.show_nav_popup:
+                        if isinstance(cur_state, PuzzleState):
+                            if event.key == pygame.K_r:
+                                cur_state.reset()
+                            elif event.key == pygame.K_h and cur_state.status not in ('solved',):
+                                cur_state.hint_timer = FPS * 3
+                        elif isinstance(cur_state, ReplayState):
+                            if event.key == pygame.K_LEFT and cur_state.step > 0:
+                                cur_state.step -= 1
+                            elif event.key == pygame.K_RIGHT and not cur_state.is_finished:
+                                cur_state.step += 1
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 px, py = event.pos
@@ -1078,51 +1368,49 @@ def main():
                         handle_play_click(gs, px, py)
 
                 elif app_mode == 'puzzle':
-                    if ps.show_nav_popup:
-                        # --- Popup button handling ---
-                        action = get_nav_popup_click(ps, px, py)
-                        if action == 'stay':
-                            ps.show_nav_popup  = False
-                            ps.nav_pending_key = None
-                        elif action == 'confirm':
-                            dest = ps.nav_pending_key
-                            ps.reset()                  # reset current game
-                            ps.switch_game(dest)        # switch + reset dest
-                    else:
-                        # --- Arrow button clicks ---
-                        arrow_clicked = False
-                        for rect, dest_key, _dir in get_arrow_rects(ps):
+                    if cur_state.show_nav_popup:
+                        action = get_nav_popup_click(cur_state, px, py)
+                        cur_state = _handle_nav_popup_action(cur_state, action)
+
+                    elif isinstance(cur_state, ReplayState):
+                        # Outer game-nav arrows (far left / far right)
+                        nav_clicked = False
+                        for rect, dest_key, _dir in get_arrow_rects(cur_state):
                             if rect.collidepoint(px, py):
-                                ps.nav_pending_key = dest_key
-                                ps.show_nav_popup  = True
-                                if ps.status == 'solved':
-                                    # Auto-dismiss after 1.5s
-                                    ps.nav_popup_timer = int(FPS * 1.5)
-                                arrow_clicked = True
+                                _handle_nav_arrow_click(cur_state, dest_key)
+                                nav_clicked = True
                                 break
-                        if not arrow_clicked:
-                            handle_puzzle_click(ps, px, py)
+                        if not nav_clicked:
+                            # Inner step arrows (◄ prev / ► next move)
+                            prev_r, next_r = get_replay_step_arrow_rects(cur_state)
+                            if prev_r.collidepoint(px, py) and cur_state.step > 0:
+                                cur_state.step -= 1
+                            elif next_r.collidepoint(px, py) and not cur_state.is_finished:
+                                cur_state.step += 1
 
-        # ---- Puzzle timers ------------------------------------------------
+                    elif isinstance(cur_state, PuzzleState):
+                        # Outer game-nav arrows
+                        nav_clicked = False
+                        for rect, dest_key, _dir in get_arrow_rects(cur_state):
+                            if rect.collidepoint(px, py):
+                                _handle_nav_arrow_click(cur_state, dest_key)
+                                nav_clicked = True
+                                break
+                        if not nav_clicked:
+                            handle_puzzle_click(cur_state, px, py)
+
+        # ---- Timers -------------------------------------------------------
         if app_mode == 'puzzle':
-            if ps.hint_timer > 0:
-                ps.hint_timer = max(0, ps.hint_timer - 1)
-
-            if ps.correct_timer > 0:
-                ps.correct_timer = max(0, ps.correct_timer - 1)
-
-            if ps.status == 'wrong' and ps.flash_timer > 0:
-                ps.flash_timer = max(0, ps.flash_timer - 1)
-                if ps.flash_timer == 0:
-                    ps.reset()
-
-            # Auto-dismiss nav popup after solved
-            if ps.show_nav_popup and ps.status == 'solved' and ps.nav_popup_timer > 0:
-                ps.nav_popup_timer = max(0, ps.nav_popup_timer - 1)
-                if ps.nav_popup_timer == 0:
-                    dest = ps.nav_pending_key
-                    ps.reset()
-                    ps.switch_game(dest)
+            if isinstance(cur_state, PuzzleState):
+                if cur_state.hint_timer > 0:
+                    cur_state.hint_timer = max(0, cur_state.hint_timer - 1)
+                if cur_state.correct_timer > 0:
+                    cur_state.correct_timer = max(0, cur_state.correct_timer - 1)
+                if cur_state.status == 'wrong' and cur_state.flash_timer > 0:
+                    cur_state.flash_timer = max(0, cur_state.flash_timer - 1)
+                    if cur_state.flash_timer == 0:
+                        cur_state.reset()
+            cur_state = _tick_nav_popup(cur_state)
 
         # ---- Draw ---------------------------------------------------------
         screen.fill(C_BG)
@@ -1137,27 +1425,35 @@ def main():
                 draw_promotion_popup(screen, gs, piece_font, ui_font)
 
         elif app_mode == 'puzzle':
-            pz      = ps.puzzle
-            chk_pos = find_king(ps.board, ps.turn) if ps.status == 'check' else None
-            hint_rc = alg_to_rc(pz['hint_sq']) if ps.hint_timer > 0 else None
+            if isinstance(cur_state, ReplayState):
+                draw_board_and_pieces(
+                    screen, cur_state.board, None, [], piece_font,
+                    last_move=cur_state.last_move)
+                draw_replay_status(screen, cur_state, ui_font, small_font)
+                if cur_state.show_nav_popup:
+                    draw_nav_popup(screen, cur_state, ui_font, small_font)
 
-            wrong_alpha = 0
-            if ps.status == 'wrong' and ps.flash_timer > 0:
-                wrong_alpha = int(110 * ps.flash_timer / (FPS * 2))
-
-            correct_rc = None
-            if not pz['free_play'] and ps.correct_timer > 0 and ps.move_step > 0:
-                correct_rc = alg_to_rc(pz['solution'][ps.move_step - 1][1])
-
-            draw_board_and_pieces(
-                screen, ps.board, ps.selected, ps.valid_moves, piece_font,
-                check_king_pos=chk_pos,
-                hint_sq=hint_rc,
-                wrong_flash_alpha=wrong_alpha,
-                correct_sq=correct_rc)
-            draw_puzzle_status(screen, ps, ui_font, small_font)
-            if ps.show_nav_popup:
-                draw_nav_popup(screen, ps, ui_font, small_font)
+            elif isinstance(cur_state, PuzzleState):
+                pz      = cur_state.puzzle
+                chk_pos = find_king(cur_state.board, cur_state.turn) \
+                          if cur_state.status == 'check' else None
+                hint_rc = alg_to_rc(pz['hint_sq']) if cur_state.hint_timer > 0 else None
+                wrong_alpha = 0
+                if cur_state.status == 'wrong' and cur_state.flash_timer > 0:
+                    wrong_alpha = int(110 * cur_state.flash_timer / (FPS * 2))
+                correct_rc = None
+                if not pz['free_play'] and cur_state.correct_timer > 0 and cur_state.move_step > 0:
+                    correct_rc = alg_to_rc(pz['solution'][cur_state.move_step - 1][1])
+                draw_board_and_pieces(
+                    screen, cur_state.board, cur_state.selected,
+                    cur_state.valid_moves, piece_font,
+                    check_king_pos=chk_pos,
+                    hint_sq=hint_rc,
+                    wrong_flash_alpha=wrong_alpha,
+                    correct_sq=correct_rc)
+                draw_puzzle_status(screen, cur_state, ui_font, small_font)
+                if cur_state.show_nav_popup:
+                    draw_nav_popup(screen, cur_state, ui_font, small_font)
 
         draw_tabs(screen, app_mode, tab_font, title_font)
         pygame.display.flip()
